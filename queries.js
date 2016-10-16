@@ -1,5 +1,5 @@
 'use strict'
-
+process.env['PATH'] = process.env['PATH'] + ':' + process.env['LAMBDA_TASK_ROOT']
 var sqlite3 = require('sqlite3').verbose()
 let Promise = require('bluebird')
 var levenshtein = require('fast-levenshtein')
@@ -201,15 +201,6 @@ let KANJI_READINGS  = `SELECT kana from kanas WHERE _id in(
         WHERE kanji=? AND ent_seq=?)`
 
 
-let MISC_FOR_ENTRY  =  `Select misc FROM misc m
-                        JOIN (Select misc_id from entry_misc WHERE ent_seq = ? ) a ON a.misc_id = m._id`
-
-
-function buildArg(searchterm, isFuzzy){
-    if (isFuzzy) return ['%' + searchterm +'%']
-    return [searchterm]
-}
-
 function addToEntry(ent_seqs, sqlquery, constructor, target, parameter1, parameter2 ){
     return db.allAsync(sqlquery).then(function(rows){
         for(let row of rows){
@@ -261,6 +252,7 @@ function findEntrys(searchterm, fuzzy, printTime, showGerman, showEnglish) {
     if (containsKanji(searchterm)){
         addQueries([KANJI_QUERY, CONJUGATED_KANJI, CONJUGATED_KANA])
     }else if(containsKana(searchterm)){
+        console.log("JAAAA")
         addQueries([KANJI_QUERY, KANA_QUERY, CONJUGATED_KANA])
     }else {
         let ROMAJI_QUERY = function(searchterm){return `SELECT romaji as hit, ent_seq FROM kanas WHERE romaji ${method}'${searchterm}'`}
@@ -278,14 +270,9 @@ function findEntrys(searchterm, fuzzy, printTime, showGerman, showEnglish) {
 
     if (printTime) taim('FindIds',Promise.all(promises))
 
-    Promise.all(promises).then(() => {
+    return Promise.all(promises).then(() => {
         return getEntries(hit_entseq, searchterm, printTime, showGerman, showEnglish)
-            
     }).then((entries) => {
-        console.log(JSON.stringify(entries, null, 2))
-        _.sortBy(entries, [function(entry) {
-            return entry.user 
-        }])
 
         entries.sort(function(result1, result2) {
             if (result1.getLevensthein_distance() == 0 &&  result2.getLevensthein_distance() != 0){
@@ -320,6 +307,8 @@ function findEntrys(searchterm, fuzzy, printTime, showGerman, showEnglish) {
         if (printTime){
             console.log('Query: ' +  process.hrtime(startTime)[1]/1000000 + ' ms.')
         }
+
+        return entries
 
     })
     
@@ -399,11 +388,15 @@ function addReadingsToEntries(entries){
 }
 
 function addMisc(entries){
+    let MISC_FOR_ENTRY  =  `Select misc FROM misc m
+                        JOIN (Select misc_id from entry_misc WHERE ent_seq = ? ) a ON a.misc_id = m._id`
     let promises = []
     for(let entry of entries){
-        let prom = db.eachAsync(MISC_FOR_ENTRY, [entry.ent_seq])
+        let prom = db.allAsync(MISC_FOR_ENTRY, [entry.ent_seq])
+        console.log(entry.ent_seq)
         promises.push(prom)
-        prom.then((row) => { entry.misc.push(row.misc) })
+        prom.then((rows) => { rows.forEach((row) => {entry.misc.push(row.misc)}) })
+        .error((err)=>{console.log(err)})
     }
     return Promise.all(promises)
 
@@ -453,9 +446,37 @@ function getSuggestions(query) {
 
 function startSearch(){
     // findEntrys('Geisterhaus', true, true, true , true , true)
-    findEntrys('having a long torso', true, true, true , true , true)
-    findEntrys('どうながたんそく', true, true, true , true , true)
+    findEntrys('キミ', false, true, true , true , true).then(function(entries){
+        console.log(JSON.stringify(entries, null, 2))
+    })
+    // findEntrys('どうながたんそく', true, true, true , true , true)
     
 }
 startSearch()
 
+exports.handler = (event, context, callback) => {
+
+    let request = event.queryStringParameters
+    // TODO implement
+    findEntrys(request.searchterm, request.fuzzy, request.printTime, request.showGerman, request.showEnglish).then(function(entries){
+
+        let response = {
+            "statusCode": 200,
+            "headers": { "Content-Type": "application/json; charset=utf-8" },
+            "body": JSON.stringify(entries)
+        }
+        callback(null, response)
+    })
+}
+
+
+// {
+//   "searchterm": "having a long torso",
+//   "fuzzy": true,
+//   "showGerman": true,
+//   "showEnglish": true,
+//   "printTime": true
+// }
+
+
+//  searchterm=having a long torso&fuzzy=true&showGerman=true&showEnglish=true&printTime=true
